@@ -1,0 +1,49 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks (full history secret scan)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: no state or cache files tracked
+        run: |
+          bad=$(git ls-files | grep -E '(\.db$|\.db-shm$|\.db-wal$|\.pyc$|__pycache__/|node_modules/|\.curator_backups/|\.log$)' || true)
+          if [ -n "$bad" ]; then
+            echo "Forbidden files tracked:"; echo "$bad"; exit 1
+          fi
+      - name: every skills folder has a SKILL.md
+        run: |
+          missing=0
+          for d in skills/*/; do
+            if [ -f "${d}DESCRIPTION.md" ] && [ "$(find "$d" -type f | wc -l)" -eq 1 ]; then
+              continue
+            fi
+            if [ -z "$(find "$d" -name SKILL.md -type f -print -quit)" ]; then
+              echo "skill folder without SKILL.md: $d"; missing=1
+            fi
+          done
+          exit $missing
+      - name: sanity - core dirs exist
+        run: |
+          for d in plugins skills fleet; do
+            [ -d "$d" ] || { echo "missing top-level dir: $d"; exit 1; }
+          done
