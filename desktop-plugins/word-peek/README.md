@@ -11,10 +11,11 @@ Optional `wn-dict.json` and `wn-thes.json` data files are not redistributed in t
 ## Workflow
 
 1. Select text in one paragraph, heading, list item, or table cell of a local HTML preview, then right-click.
-2. Select **Explore**, or enter a question and select **Ask**.
+2. Select **Ask Hermes** (it uses any question you typed), or type a question and press Enter.
 3. Read the answer and ask follow-up questions in the panel. **Use as my note** adds your own text without a model call.
 4. Select **Expandable note** (default), **Insert below**, or **Replace selection**, then **Preview in HTML**.
-5. Select **Apply to HTML**. The local file is backed up, written, checked, and its preview reloaded. **Undo last HTML change** restores the backup if the file has not changed since that save.
+5. For free-form document work, type an instruction ("add a fade-in animation", "embed a diagram image", "add narration audio") and select **Edit document** — see Free-form editing below.
+6. Select **Apply to HTML**. The local file is backed up, written, checked, and its preview reloaded. **Undo last HTML change** restores the backup if the file has not changed since that save.
 
 The panel keeps question history per captured passage and chat/profile during the current plugin lifetime. HTML additions persist in the file. Glossary entries and last-edit undo metadata persist in plugin storage. Backup files are kept next to the HTML with `.word-peek-<timestamp>.bak` suffixes.
 
@@ -26,6 +27,10 @@ The panel keeps question history per captured passage and chat/profile during th
 - Source anchors include block text, a unique ID or structural path, and exact selection offsets. Edits preserve the rest of the source; replacement may normalize markup inside the edited block.
 - Saves and undo reread and compare before overwriting. The desktop bridge does not provide an atomic compare-and-swap operation, so another program writing in the final read/write interval cannot be locked out.
 - Generated text and links are escaped; model-provided HTML and unprovided source URLs are rejected. Interactive blocks and stale or ambiguous anchors require a new selection.
+
+## Free-form editing
+
+**Edit document** sends the whole file plus your instruction to the agent loop, which may rewrite the document entirely — animations, images, audio/voice, styles, scripts, layout. The plugin never trusts the reply: it refuses to write unless the file is byte-identical to the source the agent was shown, validates the returned document (complete HTML page, no code fences, no unclosed `<script>`, no nested `<html>`, not a suspicious truncation), backs up, writes, and re-reads to verify. The same **Undo last HTML change** restores the previous version.
 
 ## Verification
 

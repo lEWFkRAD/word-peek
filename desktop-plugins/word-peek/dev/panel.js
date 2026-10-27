@@ -1,5 +1,6 @@
 import { planHtmlEdit } from './html-edit.js'
 import { generateAnswer } from './agent-answer.js'
+import { requestHtmlEdit } from './html-agent.js'
 
 let host, ctx, panel, active
 const sessions = new Map()
@@ -111,7 +112,7 @@ function render() {
   const session = active
   panel.replaceChildren()
   const header = el('header')
-  const title = el('div'); title.append(el('div','wb-kicker','Word Peek'), el('h2','','Explore & build'))
+  const title = el('div'); title.append(el('div','wb-kicker','Word Peek'), el('h2','','Ask Hermes'))
   const closeButton = button('×',close); closeButton.setAttribute('aria-label','Close explore panel')
   header.append(title,closeButton)
   const scroll = el('div','wb-scroll')
@@ -121,7 +122,7 @@ function render() {
   quote.append(el('blockquote','',session.passage.selectedText))
   scroll.append(quote)
   scroll.append(el('div','wb-meta',session.filePath ? session.filePath.split(/[\\/]/).pop() + ' · Local HTML' : 'Answers stay here. Open a local HTML preview to add them to a file.'))
-  if (!session.turns.length) scroll.append(el('div','wb-meta','Ask about this passage, explore an example, or add your own note.'))
+  if (!session.turns.length) scroll.append(el('div','wb-meta','Ask Hermes about this passage, or write your own note.'))
   for (const [index, turn] of session.turns.entries()) {
     const section = el('article','wb-turn')
     section.append(el('div','wb-question',turn.question),el('div','wb-body',turn.answer.body))
@@ -153,13 +154,14 @@ function render() {
   const input=el('textarea');input.rows=2;input.placeholder='Ask a follow-up or write a note…';input.setAttribute('aria-label','Question or note')
   input.value=session.draft;input.oninput=()=>{session.draft=input.value}
   const row=el('div','wb-controls')
-  const submit=button(session.busy?'Working…':'Ask',()=>{},'wb-primary');submit.type='submit';submit.disabled=session.busy
+  const submit=button(session.busy?'Working…':'Ask Hermes',()=>{},'wb-primary');submit.type='submit';submit.disabled=session.busy
+  const editDoc=button('Edit document',()=>editWholeDocument(session,input.value),'wb-primary');editDoc.disabled=!session.filePath||session.busy||saving
   const ownNote=button('Use as my note',()=>{
     if (!input.value.trim()) return
     session.turns.push({question:'My note',answer:{title:'My note',body:input.value.trim(),sources:[]}})
     session.draft='';session.error='';render()
   });ownNote.disabled=session.busy
-  row.append(submit,ownNote)
+  row.append(submit,editDoc,ownNote)
   if (session.busy) row.append(button('Cancel',()=>{session.controller?.abort();session.busy=false;session.error='Request cancelled.';render()}))
   form.append(input,row)
   form.onsubmit=e=>{e.preventDefault();if(input.value.trim()&&!session.busy) ask(session,input.value)}
@@ -177,6 +179,45 @@ async function ask(session, question) {
     session.turns.push({question,answer})
   } catch (err) {
     if(!controller.signal.aborted) {session.error=err.message || 'Could not get an answer.';session.draft=question}
+  } finally {
+    if(session.controller===controller) {session.busy=false;if(active===session) render()}
+  }
+}
+// Free-form document editing: the agent may rewrite the whole file (animations,
+// images, voice, anything). Safety lives in applyWholeEdit: backup, verified
+// write, and the same Undo record the passage insertions use.
+async function editWholeDocument(session, instruction) {
+  if (!instruction.trim() || session.busy || saving || !session.filePath) return
+  session.controller?.abort()
+  const controller = new AbortController()
+  session.controller=controller;session.busy=true;session.error='';session.prepared=null;session.draft=''
+  if (active===session) render()
+  try {
+    const result=await requestHtmlEdit(host,{
+      filePath:session.filePath,
+      instruction:instruction.trim(),
+      sessionId:session.passage?.sessionId,
+      signal:controller.signal,
+      readHtml:()=>readHtml(session.filePath),
+      writeHtml:async text=>{
+        const beforeHash=await digest(await readHtml(session.filePath))
+        const afterHash=await digest(text)
+        const backup=session.filePath+'.word-peek-'+Date.now()+'.bak'
+        await window.hermesDesktop.writeTextFile(backup,await readHtml(session.filePath))
+        if(await digest(await readHtml(backup))!==beforeHash) throw new Error('The backup could not be verified. The original has not been edited.')
+        const record={path:session.filePath,backup,beforeHash,afterHash}
+        persist('html.pending.v1',record)
+        await window.hermesDesktop.writeTextFile(session.filePath,text)
+        persist('html.undo.v1',record)
+        ctx.storage.remove('html.pending.v1')
+      }
+    })
+    if(controller.signal.aborted) return
+    session.turns.push({question:'Edit document: '+instruction.trim().slice(0,120),answer:{title:result.summary,body:'The whole document was rewritten by Hermes and saved. Use Undo to revert.',sources:[],sourceNote:'Full-document edit · backup kept · Undo available below'}})
+    note('Document updated. Undo is available here.')
+    await refreshGuest(session)
+  } catch (err) {
+    if(!controller.signal.aborted) {session.error=err.message || 'Could not edit the document.';session.draft=instruction}
   } finally {
     if(session.controller===controller) {session.busy=false;if(active===session) render()}
   }

@@ -296,7 +296,8 @@ function showCard(x, y, selection, hit) {
   content.append(status)
   const row = node('div', 'wp-actions')
   const button = (label, action, cls) => { const b = node('button', cls, label); b.onclick = action; row.append(b); return b }
-  button('Explore', () => explore(sel, 'Explain this passage with a concrete example.'), 'wp-primary')
+  let askDraft = () => ''
+  button('Ask Hermes', () => explore(sel, askDraft() || 'Explain this passage with a concrete example.'), 'wp-primary')
   button('Copy', async () => {
     try { await navigator.clipboard.writeText(sel); hideCard() }
     catch { host.notify({ kind: 'warning', message: 'Could not copy the selection.' }) }
@@ -317,6 +318,7 @@ function showCard(x, y, selection, hit) {
   askButton.type = 'submit'
   questionForm.append(questionInput, askButton)
   questionForm.onsubmit = e => { e.preventDefault(); if (questionInput.value.trim()) explore(sel, questionInput.value.trim()) }
+  askDraft = () => questionInput.value.trim()
   el.append(head, content, questionForm, row)
   el.style.display = 'flex'
   anchor = { x, y }
