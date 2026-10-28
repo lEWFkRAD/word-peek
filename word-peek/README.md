@@ -1,3 +1,10 @@
+<!-- project-home:start -->
+**[Word Peek project homepage](https://lewfkrad.github.io/word-peek/)** · [Documentation](https://github.com/lEWFkRAD/word-peek#install-and-open)
+
+Explore a document with Hermes beside it, keeping your place and your questions together.
+
+<!-- project-home:end -->
+
 # Word Peek
 
 ![Word Peek - Read. Ask. Understand. A magnifying lens reveals a highlighted word on a document.](https://raw.githubusercontent.com/lEWFkRAD/word-peek/master/docs/hero.png)
