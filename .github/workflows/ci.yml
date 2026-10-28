@@ -30,7 +30,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     env:
-      HERMES_HOME: ${{ runner.temp }}/word-peek-test-home
       HERMES_CHECKOUT: ${{ github.workspace }}/_hermes-loader
     defaults:
       run:
@@ -66,4 +65,6 @@ jobs:
           sparse-checkout: /apps/desktop/src/contrib/runtime-loader.ts
           persist-credentials: false
       - name: Unit, browser, and actual-loader regressions
+        env:
+          HERMES_HOME: ${{ runner.temp }}/word-peek-test-home
         run: npm test
