@@ -1,5 +1,7 @@
 # Word Peek
 
+![Word Peek - Read. Ask. Understand. A magnifying lens reveals a highlighted word on a document.](https://raw.githubusercontent.com/lEWFkRAD/word-peek/master/docs/hero.png)
+
 Word Peek is a Hermes Desktop plugin for exploring HTML passages, asking questions in the passage's chat, and saving notes or whole-document edits with backups and verified Undo.
 
 ## Install and open
