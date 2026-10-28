@@ -1,0 +1,10 @@
+name: word-peek
+version: "0.1.1"
+description: Explore HTML passages, ask Hermes, and save verified notes and document edits through folder-scoped Desktop file access.
+author: lEWFkRAD
+homepage: https://github.com/lEWFkRAD/word-peek
+kind: standalone
+platforms: []
+provides_tools: []
+provides_hooks: []
+requires_env: []

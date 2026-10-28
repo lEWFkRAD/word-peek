@@ -2,11 +2,11 @@ const assert = require('node:assert/strict')
 const path = require('node:path')
 const { dependency, nodePaths } = require('./runtime.cjs')
 const { build } = dependency('esbuild')
-const { chromium } = dependency('playwright')
+const { launchBrowser } = require('./runtime.cjs')
 
 ;(async () => {
   const bundle = await build({ entryPoints: [path.join(__dirname, 'html-edit.js')], bundle: true, write: false, format: 'iife', globalName: 'htmlEdit', nodePaths })
-  const browser = await chromium.launch({ headless: true, channel: 'msedge' })
+  const browser = await launchBrowser()
   try {
     const page = await browser.newPage()
     await page.addScriptTag({ content: bundle.outputFiles[0].text })

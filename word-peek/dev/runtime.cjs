@@ -6,5 +6,6 @@ const home = process.env.HERMES_HOME || roots.find(p => fs.existsSync(p))
 const checkout = process.env.HERMES_CHECKOUT || (home && path.join(home, 'hermes-agent'))
 const nodePaths = [path.join(__dirname, 'node_modules'), checkout && path.join(checkout, 'node_modules')].filter(Boolean)
 const dependency = name => require(require.resolve(name, { paths: [__dirname, ...(checkout ? [checkout] : [])] }))
-module.exports = { home, checkout, nodePaths, dependency }
+const launchBrowser = () => dependency('playwright').chromium.launch({ headless: true, ...(process.env.PLAYWRIGHT_CHANNEL ? { channel: process.env.PLAYWRIGHT_CHANNEL } : {}) })
+module.exports = { home, checkout, nodePaths, dependency, launchBrowser }
 

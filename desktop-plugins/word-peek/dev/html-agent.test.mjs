@@ -13,19 +13,24 @@ test('validateEditedHtml accepts a complete rewrite', () => {
 test('validateEditedHtml rejects fences, missing html tags, unbalanced scripts, truncation', () => {
   assert.throws(() => validateEditedHtml('```html\n' + DOC + '\n```', DOC), /code fences/)
   assert.throws(() => validateEditedHtml('<p>no html tags here ' + 'y'.repeat(500) + '</p>', DOC), /complete HTML page/)
-  assert.throws(() => validateEditedHtml('<html><body><script>a' + 'z'.repeat(500) + '</body></html>', DOC), /unclosed <script>/)
+  assert.throws(() => validateEditedHtml('<html><body><script>a' + 'z'.repeat(500) + '</body></html>', DOC), /unclosed script/)
   assert.throws(() => validateEditedHtml('<html><body>tiny</body></html>', DOC), /lost most of the original/)
   assert.throws(() => validateEditedHtml('<html><html><body>' + 'w'.repeat(500) + '</body></html>', DOC), /nested or repeated/)
 })
 
 function mockHost(replyText) {
-  const listeners = []
+  const listeners=new Set()
   return {
-    state: { focusedSessionId: 'sess-1' },
-    request: async (method) => {
-      if (method === 'prompt.submit') setTimeout(() => listeners.forEach(cb => cb({ session_id: 'sess-1', payload: { status: 'complete', text: replyText } })), 5)
+    state:{focusedSessionId:{get:()=> 'sess-1'}},
+    request:async(method,params)=>{
+      assert.equal(params.session_id,'sess-1')
+      if(method==='session.resume')return {session_id:'sess-1',running:false}
+      if(method==='prompt.submit'){
+        setTimeout(()=>listeners.forEach(cb=>cb({session_id:'sess-1',payload:{status:'complete',text:replyText,persisted_turn:{user_row_id:41}}})),5)
+        return {status:'streaming',user_row_id:41}
+      }
     },
-    onEvent: (_kind, cb) => { listeners.push(cb); return () => {} }
+    onEvent:(_kind,cb)=>{listeners.add(cb);return()=>listeners.delete(cb)}
   }
 }
 
@@ -81,4 +86,45 @@ test('requestHtmlEdit tolerates prose around the JSON reply', async () => {
   })
   assert.equal(saved, edited)
   assert.equal(result.summary, 'Added audio.')
+})
+
+test('HTML parser rejects closing-only and unterminated pages',()=>{
+  assert.throws(()=>validateEditedHtml('</html>'+'x'.repeat(500),DOC),/complete HTML page/)
+  assert.throws(()=>validateEditedHtml(DOC.replace('</html>',''),DOC),/complete HTML page/)
+})
+test('literal markup in scripts and comments is not a repeated root',()=>{
+  const edited=DOC.replace('</head>','<script>const example="<html>";</script><!-- <html> --></head>')
+  assert.equal(validateEditedHtml(edited,DOC),edited)
+})
+test('rewrites reject incompatible encodings and NUL',()=>{
+  assert.throws(()=>validateEditedHtml(DOC.replace('<head>','<head><meta charset="windows-1252">'),DOC),/UTF-8/)
+  assert.throws(()=>validateEditedHtml(DOC.replace('<head>','<head><meta http-equiv="Content-Type" content="text/html;charset=latin1">'),DOC),/UTF-8/)
+  assert.throws(()=>validateEditedHtml(DOC+'\u0000',DOC),/UTF-8/)
+})
+test('cancel while rechecking source prevents write',async()=>{
+  const controller=new AbortController();let reads=0,writes=0
+  const edited=DOC.replace('<p>','<p>new ')
+  await assert.rejects(requestHtmlEdit(mockHost(JSON.stringify({html:edited,summary:'edit'})),{
+    filePath:'/tmp/doc.html',instruction:'edit',signal:controller.signal,
+    readHtml:async()=>{if(++reads===2)controller.abort();return DOC},writeHtml:async()=>{writes++}
+  }),{name:'AbortError'});assert.equal(writes,0)
+})
+test('writer receives exact original snapshot',async()=>{
+  const edited=DOC.replace('<p>','<p>new ');let file=DOC,received
+  await requestHtmlEdit(mockHost(JSON.stringify({html:edited,summary:'edit'})),{
+    filePath:'/tmp/doc.html',instruction:'edit',readHtml:async()=>file,
+    writeHtml:async(text,context)=>{received=context.before;file=text}
+  });assert.equal(received,DOC)
+})
+test('non-UTF8 source is rejected before submission',async()=>{
+  let submitted=false
+  const host=mockHost('unused');host.request=async()=>{submitted=true}
+  await assert.rejects(requestHtmlEdit(host,{filePath:'/tmp/doc.html',instruction:'edit',readHtml:async()=>DOC.replace('<head>','<head><meta charset="windows-1252">'),writeHtml:async()=>{throw new Error('must not write')}}),/UTF-8/)
+  assert.equal(submitted,false)
+})
+test('post-write read must return exact verified text',async()=>{
+  const edited=DOC.replace('<p>','<p>new ');let reads=0
+  await assert.rejects(requestHtmlEdit(mockHost(JSON.stringify({html:edited,summary:'edit'})),{
+    filePath:'/tmp/doc.html',instruction:'edit',readHtml:async()=>++reads<3?DOC:null,writeHtml:async()=>{}
+  }),/saved file does not match/)
 })

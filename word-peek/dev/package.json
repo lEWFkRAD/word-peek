@@ -1,11 +1,16 @@
 {
   "name": "word-peek-development",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "build": "node build.cjs",
-    "test": "node build.cjs && node html-edit.test.cjs && node --test agent-answer.test.mjs html-agent.test.mjs && node integration.test.cjs && node regression.test.cjs && node loader.test.cjs"
+    "release": "node build.cjs --release",
+    "check:release": "node build.cjs --check",
+    "test:unit": "node --test agent-answer.test.mjs html-agent.test.mjs sdk-files.test.mjs html-files.test.mjs",
+    "test:browser": "node html-edit.test.cjs && node reader.test.cjs && node integration.test.cjs && node regression.test.cjs",
+    "test:loader": "node loader.test.cjs",
+    "test": "npm run build && npm run test:unit && npm run test:browser && npm run test:loader"
   },
   "devDependencies": {
     "esbuild": "0.28.1",
@@ -13,4 +18,3 @@
     "playwright": "1.62.1"
   }
 }
-

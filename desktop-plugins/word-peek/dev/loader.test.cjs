@@ -3,7 +3,7 @@ const path = require('node:path')
 const assert = require('node:assert/strict')
 const { checkout: hermes, dependency } = require('./runtime.cjs')
 const { build } = dependency('esbuild')
-const { chromium } = dependency('playwright')
+const { launchBrowser } = require('./runtime.cjs')
 
 ;(async () => {
   if (!hermes) throw new Error('Set HERMES_CHECKOUT to run the actual runtime loader regression.')
@@ -14,6 +14,11 @@ const { chromium } = dependency('playwright')
     plugins: [{ name: 'app-services', setup(b) {
       b.onResolve({ filter: /.*/ }, args => args.kind === 'entry-point' ? undefined : { path: args.path, namespace: 'mock' })
       b.onLoad({ filter: /.*/, namespace: 'mock' }, () => ({ contents: `
+        export const atom=(value)=>({get:()=>value,set:next=>{value=next}});
+        export const isReadFileErrorResult=result=>!result||typeof result.error==='string';
+        export const forgetPluginPreviewAccess=()=>{};
+        export const trackGatewayEventDisposers=(_track,register)=>register();
+        export const declaredCapabilities=plugin=>Array.isArray(plugin.capabilities)?plugin.capabilities:[];
         export const installPluginSdk=()=>{};
         export const sdkImportMap=()=>({'@hermes/plugin-sdk':window.sdkUrl});
         export const notifyError=(...args)=>window.errors.push(args);
@@ -25,7 +30,7 @@ const { chromium } = dependency('playwright')
       ` }))
     } }]
   })
-  const browser = await chromium.launch({ headless: true, channel: 'msedge' })
+  const browser = await launchBrowser()
   try {
     const page = await browser.newPage()
     await page.evaluate(() => {

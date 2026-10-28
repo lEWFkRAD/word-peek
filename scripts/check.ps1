@@ -7,20 +7,8 @@ $problems = @()
 # --- Rule 1: no state/cache files tracked ---
 $tracked = git -C $repo ls-files --cached --others --exclude-standard
 if ($LASTEXITCODE -ne 0) { throw 'Cannot inventory authoring files for validation' }
-if ($LASTEXITCODE -ne 0) { throw "git ls-files failed (exit $LASTEXITCODE)" }
 $bad = $tracked | Where-Object { $_ -match '(\.db$|\.db-shm$|\.db-wal$|\.pyc$|__pycache__/|node_modules/|\.curator_backups/|\.log$|\.bak(-|$))' }
 foreach ($f in $bad) { $problems += "forbidden file tracked: $f" }
-
-# --- Rule 2: every skills/<x>/ contains at least one SKILL.md ---
-Get-ChildItem (Join-Path $repo 'skills') -Directory | Where-Object { $_.Name -notlike '.*' } | ForEach-Object {
-    $hits = Get-ChildItem $_.FullName -Recurse -Filter 'SKILL.md' -File -ErrorAction SilentlyContinue
-    if (-not $hits) {
-        $files = @(Get-ChildItem $_.FullName -Recurse -File -ErrorAction SilentlyContinue)
-        if ($files.Count -ne 1 -or $files[0].Name -ne 'DESCRIPTION.md') {
-            $problems += "skill folder without SKILL.md: skills/$($_.Name)"
-        }
-    }
-}
 
 # --- Rule 3: secret scan over working tree text files ---
 # Placeholders (xxx, REDACTED, example, unused-for-local, <angle-bracket>) are allowed.
@@ -39,19 +27,18 @@ $secretPatterns = @(
 # Allowed: placeholders, angle-bracket stand-ins, env-var references, and
 # values that are themselves env-var NAMES (ALL_CAPS_WITH_KEY/TOKEN suffix).
 $allow = 'x{4,}|REDACTED|example|placeholder|unused-for-local|your[-_]|<[^>]+>|\$\{|\$env:|%[A-Z_]+%|dummy|changeme|generate-a-strong|[A-Z0-9_]+_(KEY|TOKEN|SECRET|PASSWORD)\b'
-$textExt = '\.(md|py|js|mjs|ts|json|yaml|yml|ps1|psm1|cmd|bat|vbs|html|css|txt|xml|toml|cfg|ini|sh)$'
+$textExt = '\.(md|py|js|mjs|cjs|ts|tsx|jsx|json|yaml|yml|ps1|psm1|cmd|bat|vbs|html|css|txt|xml|toml|cfg|ini|sh)$'
 
 # Scan every payload file in the working tree, including untracked files.
 # Never print matched content.
-$payloadFiles = Get-ChildItem -LiteralPath $repo -Recurse -File -Force |
-    Where-Object {
-        $_.FullName -notmatch '\\(_archive|__pycache__|node_modules|\.curator_backups|\.venv|image_cache|\.hub|\.git|\.pytest_cache)\\'
-    }
-foreach ($path in $payloadFiles) {
-    $f = $path.FullName.Substring($repo.Length).TrimStart('\') -replace '\\','/'
+$payloadFiles = @(git -C $repo ls-files --cached --others --exclude-standard)
+if ($LASTEXITCODE -ne 0) { throw 'Cannot inventory authoring files for validation' }
+foreach ($f in $payloadFiles) {
     if ($f -notmatch $textExt) { continue }
+    $fullPath = Join-Path $repo $f
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) { continue }
     $i = 0
-    foreach ($line in [System.IO.File]::ReadLines($path.FullName)) {
+    foreach ($line in [System.IO.File]::ReadLines($fullPath)) {
         $i++
         foreach ($p in $secretPatterns) {
             if ($line -match $p -and $line -notmatch $allow) {

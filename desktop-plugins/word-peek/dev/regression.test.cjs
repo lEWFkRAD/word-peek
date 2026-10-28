@@ -4,7 +4,7 @@ const assert = require('node:assert/strict')
 const { pathToFileURL } = require('node:url')
 const { dependency, nodePaths } = require('./runtime.cjs')
 const { build } = dependency('esbuild')
-const { chromium } = dependency('playwright')
+const { launchBrowser } = require('./runtime.cjs')
 const fixture = path.join(__dirname, 'regression-fixture.html').replaceAll('\\', '/')
 const fixtureUrl = pathToFileURL(fixture).href
 const original = fs.readFileSync(fixture, 'utf8')
@@ -16,7 +16,7 @@ const createdBackups = new Set()
     bundle: true, write: false, format: 'iife', globalName: 'regression', nodePaths
   })
   const source = bundle.outputFiles[0].text
-  const browser = await chromium.launch({ headless: true, channel: 'msedge' })
+  const browser = await launchBrowser()
   let context
   let page
   let guest
@@ -52,12 +52,12 @@ const createdBackups = new Set()
         set: (key, value) => { if (!window.storageBlocked) window.saved[key] = structuredClone(value) },
         remove: key => { delete window.saved[key] }
       }
-      window.hermesDesktop = { readPluginSource: file => window.fixtureRead(file), writeTextFile: (file, text) => window.fixtureWrite(file, text) }
+      const adapter = { readHtml: async file => (await window.fixtureRead(file)).text, writeHtml: (file, text, options) => window.fixtureWrite(file, text, options) }
       const guest = document.querySelector('webview')
       guest.setAttribute('src', fixtureUrl)
       guest.getURL = () => fixtureUrl
       guest.reload = () => { window.reloadCount++ }
-      window.dispose = regression.configureReadBuild({ notify: notice => window.notices.push(notice) }, { storage })
+      window.dispose = regression.configureReadBuild({ notify: notice => window.notices.push(notice) }, { storage }, adapter)
     }, { fixtureUrl })
   }
   const reopen = async selector => {

@@ -1,0 +1,4 @@
+**/node_modules/
+**/dev/dist/
+**/dev/*.bak
+**/dev/read-build-*.png

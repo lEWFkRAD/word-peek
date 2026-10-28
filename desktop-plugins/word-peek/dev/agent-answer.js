@@ -1,3 +1,5 @@
+import { pinAgentSession, requestAgentTurn } from './agent-turn.js'
+
 /** Inline explanations route through the main Hermes agent loop.
  *
  * The question is submitted to the pinned passage's session as a normal chat
@@ -9,7 +11,6 @@
 const MAX_QUESTION = 2000
 const MAX_BODY = 16000
 const MAX_HISTORY = 6
-const ANSWER_TIMEOUT_MS = 300000
 
 const MARKER = 'Word Peek (inline):'
 
@@ -25,10 +26,6 @@ const ANSWER_INSTRUCTIONS = [
 
 function bounded(value, limit) {
   return typeof value === 'string' ? value.trim().slice(0, limit) : ''
-}
-
-function readAtom(atom) {
-  return typeof atom?.get === 'function' ? atom.get() : null
 }
 
 function abortError() {
@@ -113,8 +110,7 @@ function parseAnswer(text, allowedSources) {
   }
 }
 
-/** Build the chat-turn prompt. The marker line lets the panel recognise the
- * matching assistant reply in the session's event stream. */
+/** Build the visible chat-turn prompt. The marker is descriptive, never correlation proof. */
 function buildPrompt({ passage, question, history, token }) {
   return [
     MARKER + ' ' + token,
@@ -133,42 +129,6 @@ function buildPrompt({ passage, question, history, token }) {
   ].join('\n')
 }
 
-/** Watch the gateway event stream for the turn's final reply.
- * Resolves with the final text, rejects on error/interrupt/timeout. */
-function awaitCompletion(host, sessionId, signal) {
-  return new Promise((resolve, reject) => {
-    let settled = false
-    let timer
-    const finish = (error, value) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      off?.()
-      signal?.removeEventListener('abort', cancel)
-      if (error) reject(error)
-      else resolve(value)
-    }
-    const cancel = () => finish(abortError())
-    const off = typeof host?.onEvent === 'function' ? host.onEvent('message.complete', event => {
-      if ((event?.session_id || '') !== sessionId) return
-      const payload = event?.payload || {}
-      if (payload.status && payload.status !== 'complete') {
-        finish(new Error('Hermes could not finish the explanation (' + payload.status + '). Please try again.'))
-        return
-      }
-      const text = typeof payload.text === 'string' ? payload.text : typeof payload.rendered === 'string' ? payload.rendered : ''
-      finish(null, text)
-    }) : null
-    if (!off) {
-      finish(new Error('This Hermes build cannot watch the chat for an answer. Update Hermes Desktop.'))
-      return
-    }
-    timer = setTimeout(() => finish(new Error('The explanation took too long. Please try again.')), ANSWER_TIMEOUT_MS)
-    signal?.addEventListener('abort', cancel, { once: true })
-    if (signal?.aborted) cancel()
-  })
-}
-
 /** @param {object} host The public @hermes/plugin-sdk host object.
  * @param {{passage: object, question: string, history?: object[], signal?: AbortSignal}} options
  * @returns {Promise<{title:string,body:string,sources:{title:string,url:string}[],sourceNote:string}>}
@@ -181,52 +141,9 @@ export async function generateAnswer(host, { passage = {}, question, history = [
   if (!selection) throw new Error('Select a passage first.')
   const allowedSources = collectSources(passage)
 
-  // Pin routing before any await: switching chat while an answer loads must
-  // not silently move the question to a different session.
-  const state = host?.state || {}
-  const sessionId = passage.sessionId || readAtom(state.focusedSessionId) || readAtom(state.activeSessionId)
-  const owner = passage.sessionOwner || readAtom(state.focusedSessionOwner)
-  const activeConnection = readAtom(state.connectionId)
-  const activeProfile = readAtom(state.profile)
-  if (owner && ((activeConnection && owner.connectionId !== activeConnection) || (activeProfile && owner.profile !== activeProfile))) {
-    throw new Error('Switch back to the passage’s chat to ask this question.')
-  }
-  if (!sessionId) throw new Error('Open a chat to ask Hermes.')
-
+  const pinned = pinAgentSession(host, { sessionId: passage.sessionId, sessionOwner: passage.sessionOwner })
   const token = 'wp-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8)
   const text = buildPrompt({ passage, question: prompt, history, token })
-
-  // The turn's completion event arrives on the socket that owns the session,
-  // so start watching before submitting and match on session_id.
-  const completion = awaitCompletion(host, sessionId, signal)
-
-  try {
-    if (owner && typeof host.profileRoutes === 'function' && typeof host.requestProfile === 'function') {
-      const routes = await host.profileRoutes()
-      if (signal?.aborted) throw abortError()
-      const route = routes.find(item => item.connectionId === owner.connectionId && item.profile === owner.profile)
-      if (!route) throw new Error('The gateway for this passage is no longer connected.')
-      // prompt.submit needs the session attached on that socket first.
-      await host.requestProfile(route, 'session.resume', { session_id: sessionId, defer_history: true, omit_messages: true }, 30000)
-      await host.requestProfile(route, 'prompt.submit', { session_id: sessionId, text }, ANSWER_TIMEOUT_MS)
-    } else {
-      const gateway = typeof host?.getGateway === 'function' ? host.getGateway() : null
-      if (gateway && typeof gateway.request === 'function') {
-        await gateway.request('session.resume', { session_id: sessionId, defer_history: true, omit_messages: true }, 30000, signal)
-        await gateway.request('prompt.submit', { session_id: sessionId, text }, ANSWER_TIMEOUT_MS, signal)
-      } else if (typeof host?.request === 'function') {
-        await host.request('session.resume', { session_id: sessionId, defer_history: true, omit_messages: true })
-        await host.request('prompt.submit', { session_id: sessionId, text })
-      } else {
-        throw new Error('Hermes is not connected. Reconnect to ask a question.')
-      }
-    }
-  } catch (err) {
-    // Release the event listener even when the submit itself failed.
-    signal?.dispatchEvent?.(new Event('abort'))
-    throw err
-  }
-
-  const reply = await completion
+  const reply = await requestAgentTurn(host, { ...pinned, text, signal })
   return parseAnswer(reply, allowedSources)
 }

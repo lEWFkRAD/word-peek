@@ -1,8 +1,9 @@
 import { planHtmlEdit } from './html-edit.js'
 import { generateAnswer } from './agent-answer.js'
 import { requestHtmlEdit } from './html-agent.js'
+import { createHtmlFileTransactions } from './html-files.js'
 
-let host, ctx, panel, active
+let host, ctx, panel, active, fileAdapter, transactions
 const sessions = new Map()
 let saving = false
 const el = (tag, cls, text) => {
@@ -23,14 +24,14 @@ export function localHtmlPath(url) {
     return /^\/[a-z]:\//i.test(path) ? path.slice(1) : path
   } catch { return null }
 }
-async function readHtml(path) {
-  const hd = window.hermesDesktop
-  if (!hd?.readPluginSource || !hd?.writeTextFile) throw new Error('This Hermes build does not expose local HTML editing.')
-  const result = await hd.readPluginSource(path)
-  if (result.truncated || result.binary || typeof result.text !== 'string') throw new Error('The HTML file could not be read in full.')
-  if (result.text.length > 900000) throw new Error('This HTML is too large for the desktop file-writing API.')
-  return result.text
+async function readWithAdapter(files, path) {
+  if (!files?.readHtml || !files?.writeHtml) throw new Error('Open this document through Word Peek to grant folder-scoped file access.')
+  const text = await files.readHtml(path)
+  if (typeof text !== 'string') throw new Error('The HTML file could not be read in full.')
+  if (text.length > 900000) throw new Error('This HTML is too large for the desktop file-writing API.')
+  return text
 }
+async function readHtml(path) { return readWithAdapter(fileAdapter, path) }
 function note(message, kind = 'info') { host.notify({kind, message}) }
 function style() {
   if (document.getElementById('word-peek-build-style')) return
@@ -70,8 +71,16 @@ function style() {
   ].join('\n')
   document.head.append(s)
 }
-export function configureReadBuild(pluginHost, pluginCtx) {
-  host = pluginHost; ctx = pluginCtx
+export function configureReadBuild(pluginHost, pluginCtx, files) {
+  host = pluginHost; ctx = pluginCtx; fileAdapter = files
+  transactions = createHtmlFileTransactions({
+    readHtml: path => readWithAdapter(files, path),
+    writeHtml: (path, text, options) => {
+      if (!files?.writeHtml) throw new Error('Folder-scoped file access is unavailable.')
+      return files.writeHtml(path, text, options)
+    },
+    storage: pluginCtx.storage
+  })
   return () => {
     for (const session of sessions.values()) session.controller?.abort()
     sessions.clear(); active = null
@@ -189,35 +198,27 @@ async function ask(session, question) {
 async function editWholeDocument(session, instruction) {
   if (!instruction.trim() || session.busy || saving || !session.filePath) return
   session.controller?.abort()
-  const controller = new AbortController()
+  const controller = new AbortController(), path = session.filePath, editor = transactions
   session.controller=controller;session.busy=true;session.error='';session.prepared=null;session.draft=''
   if (active===session) render()
   try {
     const result=await requestHtmlEdit(host,{
-      filePath:session.filePath,
-      instruction:instruction.trim(),
-      sessionId:session.passage?.sessionId,
-      signal:controller.signal,
-      readHtml:()=>readHtml(session.filePath),
-      writeHtml:async text=>{
-        const beforeHash=await digest(await readHtml(session.filePath))
-        const afterHash=await digest(text)
-        const backup=session.filePath+'.word-peek-'+Date.now()+'.bak'
-        await window.hermesDesktop.writeTextFile(backup,await readHtml(session.filePath))
-        if(await digest(await readHtml(backup))!==beforeHash) throw new Error('The backup could not be verified. The original has not been edited.')
-        const record={path:session.filePath,backup,beforeHash,afterHash}
-        persist('html.pending.v1',record)
-        await window.hermesDesktop.writeTextFile(session.filePath,text)
-        persist('html.undo.v1',record)
-        ctx.storage.remove('html.pending.v1')
+      filePath:path,instruction:instruction.trim(),
+      sessionId:session.passage?.sessionId,sessionOwner:session.passage?.sessionOwner,
+      signal:controller.signal,readHtml:()=>readHtml(path),
+      writeHtml:async (text, {before, signal})=>{
+        if (saving) throw new Error('Another HTML save or Undo is in progress. Try again when it finishes.')
+        saving=true
+        if(active===session) render()
+        try { await editor.save({path,before,after:text,signal}) }
+        finally {saving=false;if(active===session)render()}
       }
     })
-    if(controller.signal.aborted) return
-    session.turns.push({question:'Edit document: '+instruction.trim().slice(0,120),answer:{title:result.summary,body:'The whole document was rewritten by Hermes and saved. Use Undo to revert.',sources:[],sourceNote:'Full-document edit · backup kept · Undo available below'}})
-    note('Document updated. Undo is available here.')
+    session.turns.push({question:'Edit document: '+instruction.trim().slice(0,120),answer:{title:result.summary,body:'The whole document was rewritten by Hermes and saved. Use Undo to revert.',sources:[],sourceNote:'Full-document edit - backup kept - Undo available below'}})
+    note(controller.signal.aborted ? 'Document saved before cancellation completed. Undo is available here.' : 'Document updated. Undo is available here.')
     await refreshGuest(session)
   } catch (err) {
-    if(!controller.signal.aborted) {session.error=err.message || 'Could not edit the document.';session.draft=instruction}
+    if(err.name!=='AbortError') {session.error=err.message || 'Could not edit the document.';session.draft=instruction}
   } finally {
     if(session.controller===controller) {session.busy=false;if(active===session) render()}
   }
@@ -249,71 +250,27 @@ async function refreshGuest(session) {
     const guest=session.guest
     const current=typeof guest?.getURL==='function'?guest.getURL():guest?.getAttribute?.('src')
     if (!guest?.isConnected || localHtmlPath(current)!==session.filePath) return
-    if (typeof guest.reload==='function') guest.reload()
-    else if (guest.tagName==='IFRAME') guest.contentWindow?.location.reload()
+    if (typeof guest.reload==='function') await guest.reload()
   } catch { note('Saved. Reload the HTML preview to see the change.') }
 }
-async function digest(text) {
-  if (!globalThis.crypto?.subtle) throw new Error('This desktop context cannot verify local file edits.')
-  const hash=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text))
-  return Array.from(new Uint8Array(hash),byte=>byte.toString(16).padStart(2,'0')).join('')
-}
-function lastUndo(path) {
-  const pending=ctx.storage?.get('html.pending.v1',null)
-  if(pending?.path===path) return pending
-  const undo=ctx.storage?.get('html.undo.v1',null)
-  return undo?.path===path?undo:null
-}
-function persist(key, record) {
-  ctx.storage.set(key,record)
-  if(JSON.stringify(ctx.storage.get(key,null))!==JSON.stringify(record)) throw new Error('There is no room to save Undo information. Free some application storage before editing this file.')
-}
+function lastUndo(path) { return transactions?.lastUndo(path) || null }
 async function applyPlan(session, plan) {
   if(saving) return
   saving=true;session.error=''
   if(active===session) render()
-  let touched=false, backup
   try {
-    const before=await readHtml(session.filePath)
-    if(before!==plan.before) throw new Error('The HTML changed since this preview. Preview the change again before applying.')
-    if(plan.after.length>900000) throw new Error('The updated HTML exceeds the desktop write limit.')
-    const beforeHash=await digest(plan.before), afterHash=await digest(plan.after)
-    backup=session.filePath+'.word-peek-'+Date.now()+'.bak'
-    await window.hermesDesktop.writeTextFile(backup,plan.before)
-    if(await digest(await readHtml(backup))!==beforeHash) throw new Error('The backup could not be verified. The original has not been edited.')
-    const record={path:session.filePath,backup,beforeHash,afterHash}
-    persist('html.pending.v1',record)
-    if(await readHtml(session.filePath)!==plan.before) throw new Error('The file changed while preparing the backup. Nothing was applied.')
-    touched=true
-    await window.hermesDesktop.writeTextFile(session.filePath,plan.after)
-    if(await readHtml(session.filePath)!==plan.after) throw new Error('Could not verify the saved file. The original is backed up at '+backup)
-    persist('html.undo.v1',record)
-    ctx.storage.remove('html.pending.v1')
+    await transactions.save({path:session.filePath,before:plan.before,after:plan.after})
     session.prepared=null
     note('Added to HTML. Undo is available here.')
     await refreshGuest(session)
-  } catch(err) {
-    session.error=err.message
-    if(touched&&backup) session.error+='\nOriginal backup: '+backup
-  } finally {
-    if(!touched) ctx.storage?.remove('html.pending.v1')
-    saving=false;if(active===session)render()
-  }
+  } catch(err) { session.error=err.message }
+  finally {saving=false;if(active===session)render()}
 }
 async function undoLast(session) {
   if(saving) return
   saving=true;session.error=''
   try {
-    const last=lastUndo(session.filePath)
-    if(!last) throw new Error('No saved change to undo for this file.')
-    const current=await readHtml(last.path)
-    if(await digest(current)!==last.afterHash) throw new Error('The HTML changed after that save. Undo would overwrite newer work; the original backup is '+last.backup)
-    const original=await readHtml(last.backup)
-    if(await digest(original)!==last.beforeHash) throw new Error('The backup changed. Undo has been stopped.')
-    if(await readHtml(last.path)!==current) throw new Error('The HTML changed while preparing Undo. No file was overwritten.')
-    await window.hermesDesktop.writeTextFile(last.path,original)
-    if(await readHtml(last.path)!==original) throw new Error('Could not verify undo. Your backup is '+last.backup)
-    ctx.storage.remove('html.undo.v1');ctx.storage.remove('html.pending.v1')
+    await transactions.undo(session.filePath)
     session.prepared=null
     note('Last HTML change undone.')
     await refreshGuest(session)
